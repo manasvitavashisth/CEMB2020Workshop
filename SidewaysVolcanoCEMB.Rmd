@@ -1,0 +1,231 @@
+---
+title: "Sideways Volcano Hepatocellular Carcinoma"
+author: "Manasvita Vashisth"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+abstract: "Identifying gene sets that depict a scaling relationship and studying their ability to predict survival"
+output:
+  html_document:
+    df_print: paged
+    number_sections: yes
+
+---
+
+```{r setup, include=FALSE, error=FALSE}
+# Knit options
+
+## Display code in final document
+knitr::opts_chunk$set(echo = TRUE)
+
+## Change working directory if data and Rmd files are in different directories
+knitr::opts_knit$set(root.dir = '/Applications/UPenn/Summer2020')
+
+
+# Package setup
+
+## Install packages (initial run only)
+#install.packages("survminer")
+#install.packages("survival")
+
+## Load packages
+library(survminer)
+library(survival)
+
+# Load data
+######reading the files into the program
+
+rm(list=ls()) #remove any previous variables
+df.input = read.table("LIHC_survival.txt", header = TRUE,sep="\t",stringsAsFactors = FALSE) #Phenotype data like survival years etc
+df.map = read.table("Liver_Seq", header = FALSE,sep="\t",stringsAsFactors = FALSE,na.strings=c("", "NA")) #Matrix of genes vs patient id
+df.map <- na.omit(df.map) #remove NA if any
+
+```
+
+# Physicochemical scaling concepts for correlated expression
+
+## Polymer physics/fractal scaling
+
+Collagens and lamins assemble into high-order fractals typical of structural polymers that impart architecture and properties – including stiffness scaling versus concentration with implications for gene-gene relationships. The concentration of such "mechanosensitive" proteins varies as a power law based on the stiffness of tissue (for example, bone being much stiffer than brain) [Swift et al](https://science.sciencemag.org/content/341/6149/1240104)
+$$
+E \sim A^\alpha \quad E \sim B^\beta 
+\\ A \sim B^\frac{\beta}{\alpha}
+$$
+
+## Stoichiometric scaling
+
+Collagen-I fibers are stoichiometric assemblies of COL1A1 and COL1A2 proteins, and a parallel increase of COL1A1 and COL1A2 transcripts (and protein) as a function of tissue stiffness can be useful in assessing data quality for normal tissues. Such stoichiometric scaling is linear and can reflect co-regulated mRNA upstream of protein assemblies, including expression from the same promoter (COL4A1 & COL4A2)
+
+## Temporal scaling
+
+Power laws also underlie highly time dependent biological processes such as cell cycle
+$$
+A \sim t^\alpha \quad B \sim t^\beta 
+\\ A \sim B^\frac{\alpha}{\beta}
+$$
+
+# Processing the data pipeline
+
+## Selecting Primary tumors
+
+Narrowing down mRNA Seq entries to only primary tumor sites (mRNA seq files contain entries from different tissue type including adjacent univolved tissue)
+
+```{r primary_tumor, include=FALSE, error=FALSE}
+## narrowing down to only primary tumor sites
+Trk1=df.map[2:dim(df.map)[1],2:3] #data frame storing mRNA seq values only
+name=df.input[1] #patient ids from the survival file
+namepro=df.map[1,2:dim(df.map)[2]] #patient ids from mrna seq file
+patientid=substr(namepro[1],1,12) #pure patient id
+k=1
+for(i in 1:dim(namepro)[2])
+{
+  if(substr(namepro[1,i],14,15)=='01')
+  {
+    Trk1[,k]=as.double(df.map[2:dim(df.map)[1],i+1]) #mrna reads
+    patientid[k]=substr(namepro[i],1,12)
+    k=k+1
+  }
+}
+
+```
+
+## Matching RNA seq patient data to survival data
+
+The mRNA Seq values for each patient are matched with the unique patient code identifying their overall survival
+```{r matching_survival_mRNA, include=FALSE, error=FALSE}
+##matching RNA seq patient data to survival data
+Trk <- data.frame(matrix(ncol = 3, nrow = 2))
+for(i in 1:length(patientid))
+{
+  for(j in 1:dim(df.input)[1])
+  {
+    if(patientid[i]==df.input$X_PATIENT[j] )
+    {
+      Trk[i,3]=df.input$OS[j]
+      Trk[i,2]=df.input$OS.time[j]/365
+      break
+    }
+  }
+}
+
+
+```
+
+## Searching for gene of interest in the mRNA Seq data
+
+```{r gene_search, include=FALSE, error=FALSE}
+gene_of_interest="LMNB1"
+iden=which(df.map$V1==gene_of_interest)-1
+
+```
+
+## Performing linear regression across all genes with respect to `r gene_of_interest`
+
+Performing linear regression on the log values of the genes gives us the exponent of the power law as the slope of the fit. The $R^2$ determines the proportion of the variance in the dependent variable (log(Gene X)) that is predictable from the independent variable (log(LMNB1))
+$$
+[Gene X] \sim [LMNB1]^\beta
+\\log(Gene X) \sim \beta log(LMNB1)
+$$
+
+```{r linear_regression, include=FALSE, error=FALSE}
+## plotting the sideways volcano plot
+
+chk=0.75*dim(Trk1)[2]  #remove any genes where 75% of the patients show zero reads
+volc <- data.frame(matrix(ncol = 3, nrow = 2)) #storing the Rsq and slope values from all gene
+k=1
+
+for(i in 1:dim(Trk1)[1])
+{
+  if(sum(Trk1[i,]==0)<chk)
+  {
+    reg=as.data.frame(t(rbind(Trk1[i,],Trk1[iden,])))
+    fit=lm(reg[,1]~reg[,2],data=reg)
+    volc[k,1]=fit$coefficients[2]
+    volc[k,2]=summary(fit)$r.squared
+    volc[k,3]=i
+    k=k+1
+  }
+}
+
+# matching gene name after removing genes that have >75% zeros
+gene=df.map[2:dim(df.map)[1],1] #all of the gene names
+gene1=gene[volc[,3]]
+volc1=cbind(volc,gene1)
+
+# selecting strong scaling Rsq and Exponent
+sbs=subset(volc1,volc1[,2]>0.5 & volc1[,1]>0.5)
+
+write.table(sbs, file = "Liver_LMNB1_strong_scaling", append = FALSE, quote = TRUE, sep = "\t",
+            eol = "\n", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"),
+            fileEncoding = "")  #change tumor name and gene name here
+
+```
+
+## Sideways Volcano Plot
+
+```{r sideways_volcano,fig.width=10, fig.height=7,fig.cap="Sideways Volcano Plot"}
+plot(volc[,2],volc[,1],pch=19,cex=0.8,xlab="Rsq",ylab="Exponent", cex.lab=1.5)
+```
+
+## Kaplan Meier
+
+[Kaplan Meier](https://www.tandfonline.com/doi/abs/10.1080/01621459.1958.10501452) Plots enable us to observe significant differences in survival of patients based on their underlying mRNA Sequencing profile
+```{r kaplan_meier, include=TRUE, fig.cap="Kaplan Meier Plot"}
+Trk[,1]=as.double(t(Trk1[iden,]))
+Trk[,4]=NULL
+Trk[,4] <- Trk[,1]> median(Trk[,1])
+fit <- survfit(Surv(Trk[,2],Trk[,3]) ~ Trk[,4],
+               data = Trk)
+ggsurvplot(fit, data = Trk, risk.table = FALSE,pval = TRUE,xlab = "Survival time in years",font.x=15,font.y=15,font.tickslab=15,legend.labs=c("low expressers","high expressers"))
+```
+
+
+## Evaluating patient survival 
+
+Patients are divided into two cohorts (high expressers and low expressers) based on median expression on a particular gene. The median survival of both the cohorts is evaluated. This process is repeated for all genes.
+
+```{r survival, include=FALSE, error=FALSE}
+kmsig <- data.frame(matrix(ncol = 3, nrow = 2))
+pro_name=df.map[1,1]
+k=1
+for (i in 1:dim(Trk1)[1])
+{
+  if(sum(Trk1[i,]==0)<chk)
+  {
+    Trk[,1]=as.double(t(Trk1[i,]))
+    Trk[,4]=NULL
+    Trk[,4] <- Trk[,1]> median(Trk[,1])
+    fit <- survfit(Surv(Trk[,2],Trk[,3]) ~ Trk[,4],
+                   data = Trk)
+    
+    kmsig[k,1]=surv_pvalue(fit)$pval
+    kmsig[k,2]=surv_median(fit)$median[1]
+    kmsig[k,3]=surv_median(fit)$median[2]
+    pro_name[k]=df.map[i+1,1]
+    k=k+1
+  }
+}
+
+kmsig1=kmsig
+kmsig2=cbind(kmsig1,pro_name)
+kmsig2[,5]=kmsig2[,3]/kmsig2[,2]
+
+write.table(kmsig2, file = "LIHC_Survival", append = FALSE, quote = TRUE, sep = " ",
+            eol = "\n", na = "NA", dec = ".", row.names = TRUE,
+            col.names = TRUE, qmethod = c("escape", "double"),
+            fileEncoding = "") #Change Tumor Name here
+sig=subset(kmsig2,volc1[,2]>0.5 & volc1[,1]>0.5)
+sig1=subset(sig, sig[,1]<0.05)
+per=dim(sig1)[1]/dim(sbs)[1]
+```
+
+## Survival Volcano Plot
+
+The -log of ratio of median survivalof low expressers to high expressers is plotted on the y-axis. The x-axis plots the p-value of the Kaplan Meier Plot comparing survival of the two patients cohorts.
+
+```{r survival_volcano, fig.width=10, fig.height=7, fig.cap="Sideways Survival Plot"}
+plot(-log2(as.double(kmsig2[,1])),log2(as.double(kmsig2[,5])),pch = 19,cex=0.5,col="grey",xlab='-log2(p-value)',ylab='log2(median survival factor change)')
+points(-log2(as.double(sig[,1])),log2(as.double(sig[,5])),pch = 19,cex=0.5,col="red")
+points(c(-log2(0.05),-log2(0.05),-log2(0.05)),-1:1,pch = 3,cex=1)
+```
+
+Percentage of genes scaling strongly with `r gene_of_interest` that predict significantly poor survival=`r per*100`
